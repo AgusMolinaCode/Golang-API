@@ -15,41 +15,11 @@ import (
 	"github.com/gorilla/mux"
 	"github.com/joho/godotenv"
 	"github.com/justinas/alice"
+	"github.com/lib/pq"
 	_ "github.com/lib/pq"
 	"github.com/xeipuuv/gojsonschema"
 	"golang.org/x/crypto/bcrypt"
 )
-
-type App struct {
-	DB     *sql.DB
-	JWTKey []byte
-}
-
-type Credentials struct {
-	Username string `json:"username,omitempty"`
-	Password string `json:"password,omitempty"`
-}
-
-type UserResponse struct {
-	XataID   string `json:"xata_id"`
-	Username string `json:"username"`
-	Token    string `json:"token,omitempty"`
-}
-
-type ErrorResponse struct {
-	Message string `json:"message"`
-}
-
-type RouteMessage struct {
-	Message string `json:"message"`
-	ID      string `json:"id,omitempty"`
-}
-
-type Claims struct {
-	Username string `json:"username"`
-	XataID   string `json:"xata_id"`
-	jwt.RegisteredClaims
-}
 
 func main() {
 
@@ -62,10 +32,14 @@ func main() {
 	userSchema, loadErr := loadSchema("schemas/user.json")
 
 	if loadErr != nil {
-		log.Fatal(loadErr)
+		log.Fatal("Error loading user schema : %v", loadErr)
 	}
 
+	projectSchema, loadErr := loadSchema("schemas/project.json")
 
+	if loadErr != nil {
+		log.Fatal("Error loading project schema : %v", loadErr)
+	}
 
 	JWTKey := []byte(os.Getenv("JWT_SECRET"))
 	if len(JWTKey) == 0 {
@@ -87,23 +61,24 @@ func main() {
 
 	router := mux.NewRouter()
 
-	chain := alice.New(logginMiddleware).Then(router)
+	userChain := alice.New(logginMiddleware, validateMiddleware(userSchema))
 
-	userChain:= alice.New(logginMiddleware, validateMiddleware(userSchema)).Then(router)
+	router.Handle("/register", userChain.ThenFunc(app.register)).Methods("POST")
+	router.Handle("/login", userChain.ThenFunc(app.login)).Methods("POST")
 
-	router.HandleFunc("/register", app.register).Methods("POST")
-	router.HandleFunc("/login", app.login).Methods("POST")
-	router.HandleFunc("/project", createProject).Methods("POST")
-	router.HandleFunc("/project/{id}", updateProject).Methods("PUT")
-	router.HandleFunc("/project/{id}", getProject).Methods("GET")
-	router.HandleFunc("/projects", getProjects).Methods("GET")
-	router.HandleFunc("/project/{id}", deleteProject).Methods("DELETE")
+	// Middleware chain and router for projects creation and management
 
-	log.Fatal(http.ListenAndServe(":8080", chain))
+	projectChain := alice.New(logginMiddleware, app.jwtMiddleware, validateMiddleware(projectSchema))
+
+	router.Handle("/projects", projectChain.ThenFunc(app.createProject)).Methods("POST")
+	router.Handle("/projects/{id}", projectChain.ThenFunc(updateProject)).Methods("PUT")
+	router.Handle("/projects/{id}", projectChain.ThenFunc(getProject)).Methods("GET")
+	router.Handle("/projects", projectChain.ThenFunc(getProjects)).Methods("GET")
+	router.Handle("/projects/{id}", projectChain.ThenFunc(deleteProject)).Methods("DELETE")
 
 	log.Fatal(http.ListenAndServe(":8080", router))
-}
 
+}
 
 // LoadSchema function to load schema from file
 func loadSchema(filePath string) (string, error) {
@@ -303,7 +278,22 @@ func (app *App) login(w http.ResponseWriter, r *http.Request) {
 }
 
 // Create Project
-func createProject(w http.ResponseWriter, r *http.Request) {
+func (app *App) createProject(w http.ResponseWriter, r *http.Request) {
+
+	var project Project
+
+	err := json.NewDecoder(r.Body).Decode(&project)
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, "Invalid request")
+		return
+	}
+
+	claims := r.Context().Value("claims").(*Claims)
+	userID := claims.XataID
+
+	var xataID string
+	err = app.DB.QueryRow("INSERT INTO projects (user_id, name, repo_url, site_url, description, dependencies, dev_dependencies, status) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING xata_id", userID, project.Name, project.RepoURL, project.SiteURL, project.Description, pq.Array(project.Dependencies), pq.Array(project.DevDependencies), project.Status).Scan(&xataID)
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(RouteMessage{Message: "Create Project"})
 }
