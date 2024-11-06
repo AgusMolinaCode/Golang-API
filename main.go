@@ -11,6 +11,7 @@ import (
 	"github.com/joho/godotenv"
 	"github.com/justinas/alice"
 	_ "github.com/lib/pq"
+	"golang.org/x/crypto/bcrypt"
 )
 
 type App struct {
@@ -23,9 +24,9 @@ type Credentials struct {
 }
 
 type UserResponse struct {
-	XataID string `json:"xata_id"`
+	XataID   string `json:"xata_id"`
 	Username string `json:"username"`
-} 
+}
 
 type ErrorResponse struct {
 	Message string `json:"message"`
@@ -54,7 +55,7 @@ func main() {
 	}
 	defer database.Close()
 
-	// app := &App{DB: database}
+	app := &App{DB: database}
 
 	router := mux.NewRouter()
 
@@ -80,27 +81,32 @@ func logginMiddleware(next http.Handler) http.Handler {
 	})
 }
 
+func respondWithError(w http.ResponseWriter, code int, message string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	json.NewEncoder(w).Encode(ErrorResponse{Message: message})
+}
+
 // Register function to handle registration
-func register(w http.ResponseWriter, r *http.Request) {
-	
+func (app *App) register(w http.ResponseWriter, r *http.Request) {
+
 	var creds Credentials
 	err := json.NewDecoder(r.Body).Decode(&creds)
 	if err != nil {
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(ErrorResponse{Message: "Invalid request"})
+		respondWithError(w, http.StatusBadRequest, "Invalid request")
 		return
 	}
 
-	if creds.Username == "" || creds.Password == "" {
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(ErrorResponse{Message: "Invalid request"})
+	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(creds.Password), bcrypt.DefaultCost)
+
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Error generating hash password")
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(UserResponse{XataID: creds.Password, Username: creds.Username})
+	var xataID string
+	err = app.DB.QueryRow("INSERT INTO users (username, password) VALUES ($1, $2) RETURNING xata_id", creds.Username, string(hashedPassword)).Scan(&xataID)
 
-	//TODO
 
 }
 
