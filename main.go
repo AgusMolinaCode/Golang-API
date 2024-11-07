@@ -16,7 +16,6 @@ import (
 	"github.com/joho/godotenv"
 	"github.com/justinas/alice"
 	"github.com/lib/pq"
-	_ "github.com/lib/pq"
 	"github.com/xeipuuv/gojsonschema"
 	"golang.org/x/crypto/bcrypt"
 )
@@ -294,8 +293,16 @@ func (app *App) createProject(w http.ResponseWriter, r *http.Request) {
 	var xataID string
 	err = app.DB.QueryRow("INSERT INTO projects (user_id, name, repo_url, site_url, description, dependencies, dev_dependencies, status) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING xata_id", userID, project.Name, project.RepoURL, project.SiteURL, project.Description, pq.Array(project.Dependencies), pq.Array(project.DevDependencies), project.Status).Scan(&xataID)
 
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Error inserting project")
+		return
+	}
+
+	project.XataID = xataID
+	project.UserID = userID
+
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(RouteMessage{Message: "Create Project"})
+	json.NewEncoder(w).Encode(project)
 }
 
 // Update Project
